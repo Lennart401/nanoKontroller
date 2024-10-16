@@ -1,0 +1,4 @@
+evdev==1.4.0
+mido==1.2.10
+python-rtmidi==1.4.7
+pulsectl==21.10.5

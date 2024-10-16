@@ -150,19 +150,20 @@ class nano_action_evdev(nano_action):
 
 # noinspection PyPep8Naming
 class nano_action_mute(nano_action):
-    def __init__(self, audio_device=None, pactl=None, led_handler=None, led_mode=None):
-        self.audio_device = audio_device
+    def __init__(self, audio_devices=None, pactl=None, led_handler=None, led_mode=None):
+        self.audio_devices = audio_devices
         self.pactl = pactl
-        self.muted = audio_device.mute  # Would be nice if we could set the LED appropriately too
+        self.muted = audio_devices[0].mute  # Would be nice if we could set the LED appropriately too
         self.led_handler = led_handler
         self.led_mode = led_mode
 
     def action(self, key=None, value=None):
-        logging.debug(f'nano_action_mute::action: Value {value} for {self.audio_device.name}')
+        logging.debug(f'nano_action_mute::action: Value {value} for {", ".join([x.name for x in self.audio_devices])}')
         # led mode toggle, check what the mute on nanoKontrol is and set the audio device accordingly
         if self.led_mode == 'toggle':
             self.muted = value > 0
-            self.pactl.mute(self.audio_device, self.muted)
+            for device in self.audio_devices:
+                self.pactl.mute(device, self.muted)
 
         elif self.led_mode == 'default':
             if value == 127:
@@ -171,7 +172,8 @@ class nano_action_mute(nano_action):
                 else:
                     self.muted = 0
                 self.led_handler.set_led(led=key, value=self.muted)
-                self.pactl.mute(self.audio_device, self.muted)
+                for device in self.audio_devices:
+                    self.pactl.mute(device, self.muted)
 
 
 # noinspection PyPep8Naming
@@ -206,15 +208,16 @@ class nano_action_program_mute(nano_action):
 
 # noinspection PyPep8Naming
 class nano_action_volume(nano_action):
-    def __init__(self, audio_device=None, pactl=None, max_level=100.0):
-        self.audio_device = audio_device
+    def __init__(self, audio_devices=None, pactl=None, max_level=100.0):
+        self.audio_devices = audio_devices
         self.pactl = pactl
         self.max_level = max_level  # Allow volume > 100%
 
     def action(self, key=None, value=None):
-        logging.debug('nano_action_volume::action: Value {} for {}'.format(value, self.audio_device.name))
-        self.pactl.volume_set_all_chans(self.audio_device,
-                                        ((float(value) / 127.0) * (float(self.max_level) / 100.0)))
+        logging.debug('nano_action_volume::action: Value {} for {}'.format(value, ', '.join([x.name for x in self.audio_devices])))
+        for device in self.audio_devices:
+            self.pactl.volume_set_all_chans(device,
+                                            ((float(value) / 127.0) * (float(self.max_level) / 100.0)))
 
 
 # noinspection PyPep8Naming
@@ -243,6 +246,27 @@ class nano_action_exec(nano_action):
         subprocess.call(filled_command, shell=True)
 
 
+class nano_action_exec_once(nano_action):
+    def __init__(self, command=None):
+        self.command = command
+
+    def action(self, key=None, value=None):
+        if value == 127:
+            filled_command = self.command.format(NK_KEY_ID=key, NK_KEY_VALUE=value)
+            logging.debug('nano_action_exec_once::action: Executing {}'.format(filled_command))
+            subprocess.call(filled_command, shell=True)
+        else:
+            logging.debug('nano_action_exec_once::action: Wrong value, skipping execution.')
+
+
+# def find_first_match(regex_list, text):
+#     for regex in regex_list:
+#         match = re.search(regex, text)
+#         if match:
+#             return match.group()  # Return the first match found
+#     return None  # Return None if no match is found
+
+
 def get_audio_devices(pactl, sources=None, sinks=None):
     if sinks is None:
         sinks = {}
@@ -252,6 +276,9 @@ def get_audio_devices(pactl, sources=None, sinks=None):
     audio_devices = {}
 
     for sink in pactl.sink_list():
+        # if sink_name := find_first_match(sinks.keys(), sink) is not None:
+        #     logging.debug('get_audio_devices: Found sink {} at {}'.format(sink_name, sink.name))
+        #     audio_devices[sink_name] = sink
         if sink.name in sinks.keys():
             logging.debug('get_audio_devices: Found sink {} at {}'.format(sinks[sink.name], sink.name))
             audio_devices[sinks[sink.name]] = sink
@@ -316,7 +343,8 @@ def parse_config(pactl, evdev, uinput, midi_out, config_object):
         else:
             if actions[0] == 'mute':
                 # Toggle mute of audio device
-                action_map[keycode] = nano_action_mute(audio_device=audio_devices[actions[1]], pactl=pactl,
+                devices = [audio_devices[x] for x in volume_details[0].split(',') if x in audio_devices]
+                action_map[keycode] = nano_action_mute(audio_devices=devices, pactl=pactl,
                                                        led_handler=led_handler, led_mode=led_mode)
 
             elif actions[0] == 'program-mute':
@@ -328,13 +356,14 @@ def parse_config(pactl, evdev, uinput, midi_out, config_object):
             elif actions[0] == 'volume':
                 # Change volume of audio device
                 volume_details = actions[1].split('/', 1)
+                devices = [audio_devices[x] for x in volume_details[0].split(',') if x in audio_devices]
 
                 if len(volume_details) == 1:
                     # No max volume override
-                    action_map[keycode] = nano_action_volume(audio_device=audio_devices[volume_details[0]], pactl=pactl)
+                    action_map[keycode] = nano_action_volume(audio_devices=devices, pactl=pactl)
                 else:
                     # Max volume override
-                    action_map[keycode] = nano_action_volume(audio_device=audio_devices[volume_details[0]], pactl=pactl,
+                    action_map[keycode] = nano_action_volume(audio_devices=devices, pactl=pactl,
                                                              max_level=float(volume_details[1]))
 
             elif actions[0] == 'program-volume':
@@ -353,6 +382,10 @@ def parse_config(pactl, evdev, uinput, midi_out, config_object):
             elif actions[0] == 'exec':
                 # Execute a command
                 action_map[keycode] = nano_action_exec(command=actions[1])
+
+            elif actions[0] == 'exec_once':
+                # Execute a command (only on press down)
+                action_map[keycode] = nano_action_exec_once(command=actions[1])
 
             else:
                 logging.warning('Unknown action {}'.format(config_object.get('keymap', keyname)))
